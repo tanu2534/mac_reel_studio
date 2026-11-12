@@ -7,13 +7,13 @@ Colab pipeline ka Mac version. Sab local, sab open-source, koi session limit nah
 - Subtitles: faster-whisper (CPU)
 - Render: moviepy + ffmpeg
 
-## Setup (ek baar, ~15 min)
+## Setup (ek baar, ~15 min) — do venv bante hain (.venv = TTS/render, .venv-mflux = images), kyunki mflux aur qwen-tts alag transformers chahte hain
 ```bash
 cd mac_reel_studio
 bash setup.sh
 ```
 Phir apne character PNGs `characters/` mein daalo (Drive → `faceless_finance_pipeline/images/character_concepts/*.png`),
-ya naye banao: `source .venv/bin/activate && python make_characters.py`
+ya naye banao: `.venv-mflux/bin/python make_characters.py`
 
 ## Chalao
 ```bash

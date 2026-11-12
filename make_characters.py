@@ -1,5 +1,5 @@
 """Naye character concepts banao (FLUX.2 klein 4B, mflux). Output: characters/<name>.png + characters/_sheet.png
-Chalao: source .venv/bin/activate && python make_characters.py
+Chalao: .venv-mflux/bin/python make_characters.py
 Apne concepts CONCEPTS dict mein badlo/jodo."""
 import os
 from PIL import Image, ImageDraw, ImageFont

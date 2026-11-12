@@ -21,7 +21,7 @@ def get_hash(s: str) -> str: return hashlib.sha256(s.encode()).hexdigest()[:16]
 def characters(): return {os.path.basename(p)[:-4]: p for p in sorted(glob.glob(f"{CHAR_DIR}/*.png")) if not os.path.basename(p).startswith("_")}
 
 # ---------------- models (lazy, cached) ----------------
-_M = {"tts": None, "flux": None, "wm": None}
+_M = {"tts": None, "wm": None}
 
 def get_tts():
     if _M["tts"] is None:
@@ -44,14 +44,15 @@ def free_tts():
             import torch; torch.mps.empty_cache()
         except Exception: pass
 
-def get_flux():
-    """FLUX.2 klein 4B, 4-bit, edit variant (reference image support)."""
-    if _M["flux"] is None:
-        from mflux.models.common.config import ModelConfig
-        from mflux.models.flux2.variants import Flux2KleinEdit
-        _M["flux"] = Flux2KleinEdit(model_config=ModelConfig.flux2_klein_4b(), quantize=4)
-        print("[flux] loaded (4-bit)")
-    return _M["flux"]
+MFLUX_PY = os.path.join(ROOT, ".venv-mflux", "bin", "python")
+def run_flux_jobs(ref, items, quantize=4):
+    """Images alag venv (.venv-mflux) mein banti hain — worker ko ek JSON job do, woh sab bana deta hai."""
+    jf = os.path.join(WS, f"_flux_jobs_{int(time.time())}.json")
+    json.dump({"ref": ref, "quantize": quantize, "items": items}, open(jf, "w"))
+    r = subprocess.run([MFLUX_PY, os.path.join(ROOT, "flux_worker.py"), jf], capture_output=True, text=True)
+    os.remove(jf)
+    if r.returncode != 0:
+        raise RuntimeError("mflux worker failed:\n" + (r.stderr or "")[-2000:])
 
 def get_wm():
     if _M["wm"] is None:
@@ -127,17 +128,20 @@ def make_reel(project_id, character, speaker, speed, script, music_file=None, lo
         yield say(f"  🎙 voice {i+1}/{len(script)}"), None, None
     free_tts()
 
-    # 2) Images (mflux, reference = character png)
-    images = []
+    # 2) Images (mflux worker in .venv-mflux, reference = character png)
+    images, jobs = [], []
     for i, s in enumerate(script):
         prompt = f"The same character from the reference image, now {s['image_prompt']}. Keep the exact same character design. {STYLE}"
         p = os.path.join(pdir("images"), f"s{i:02d}_{get_hash(prompt + character)}.png")
-        if not os.path.exists(p):
-            raw = get_flux().generate_image(seed=7, prompt=prompt, image_paths=[ref_path], num_inference_steps=4, width=704, height=1248)
-            pil = raw.image if hasattr(raw, "image") else raw
-            pil.save(p.replace(".png", "_raw.png")); fit_to_canvas(pil.convert("RGB"), W, H).save(p)
         images.append(p)
-        yield say(f"  🖼 image {i+1}/{len(script)}"), p, None
+        if not os.path.exists(p):
+            jobs.append({"prompt": prompt, "out": p.replace(".png", "_raw.png"), "width": 704, "height": 1248, "seed": 7})
+    if jobs:
+        yield say(f"  🖼 generating {len(jobs)} images (FLUX, pehli baar model load ~1 min)..."), None, None
+        run_flux_jobs(ref_path, jobs)
+        for j in jobs:
+            fit_to_canvas(Image.open(j["out"]).convert("RGB"), W, H).save(j["out"].replace("_raw.png", ".png"))
+    yield say(f"  🖼 images ready {len(images)}/{len(script)}"), images[-1], None
 
     # 3) word timestamps
     import librosa

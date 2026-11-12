@@ -1,1 +1,6 @@
 .venv/
+.venv-mflux/
+workspace/
+__pycache__/
+*.pyc
+.DS_Store
