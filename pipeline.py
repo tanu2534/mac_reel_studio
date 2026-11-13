@@ -181,6 +181,18 @@ def make_reel(project_id, character, speaker, speed, script, music_file=None, lo
     final.write_videofile(out, fps=FPS, codec="libx264", audio_codec="aac", preset="fast", threads=6, logger=None)
     yield say(f"✅ DONE {final.duration:.1f}s → {out}"), images[-1], out
 
+PREVIEW_LINE = "I checked my bank balance at 3am. It checked me back."
+def preview_voice(speaker, instruct="deadpan, dry, fast", speed=1.2, text=None):
+    """Chhota sample: selected voice + instruct. Cached in workspace/audio/_previews."""
+    import soundfile as sf
+    text = (text or "").strip() or PREVIEW_LINE
+    d = os.path.join(FOLDERS["audio"], "_previews"); os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, f"{speaker}_{get_hash(text + instruct)}.wav")
+    if not os.path.exists(p):
+        wavs, sr = get_tts().generate_custom_voice(text=text, language="English", speaker=speaker, instruct=instruct or None)
+        sf.write(p, wavs[0], sr)
+    return speed_up(p, float(speed))
+
 def list_videos():
     vs = sorted(glob.glob(f"{FOLDERS['videos']}/*.mp4"), key=os.path.getmtime, reverse=True)
     return "\n".join(f"{os.path.basename(v)}  ({os.path.getsize(v)//1024} KB, {time.strftime('%d %b %H:%M', time.localtime(os.path.getmtime(v)))})" for v in vs) or "(koi video nahi)"
