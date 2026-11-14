@@ -8,6 +8,13 @@ EXAMPLE = json.dumps([
    "image_prompt": "sitting on a therapy couch, arms crossed"},
   {"line": "Follow for more dead-end advice.", "instruct": "cheerful, upbeat, quick", "pause": 0.0,
    "image_prompt": "waving at camera"}], indent=1)
+EXAMPLE_MULTI = json.dumps([
+  {"character": "ghost_therapy", "line": "Doc, I think I'm overthinking.", "instruct": "tired, fast", "pause": 0.3,
+   "image_prompt": "lying on a therapy couch, staring at the ceiling"},
+  {"character": "reaper_intern", "line": "Sir, you're dead. That's the least of your problems.", "instruct": "nervous, quick", "pause": 0.6,
+   "image_prompt": "sitting in a therapist chair with a clipboard and coffee"},
+  {"character": "ghost_therapy", "with": ["reaper_intern"], "line": "Great. My therapist is an intern.", "instruct": "deadpan, dry", "pause": 0.0,
+   "image_prompt": "a ghost on a couch and a tiny reaper in a chair facing each other in a therapy office"}], indent=1)
 EXAMPLE_HI = json.dumps([
   {"line": "थेरेपिस्ट ने पूछा, तुम्हें क्या सताता है? सर... मैं ही सताता हूँ।", "pause": 0.5,
    "image_prompt": "sitting on a therapy couch, arms crossed"},
@@ -68,6 +75,11 @@ with gr.Blocks(title="Reel Studio") as demo:
                     cw = gr.Number(value=1080, label="Custom W", precision=0); ch = gr.Number(value=1920, label="Custom H", precision=0)
                 music = gr.Dropdown([""] + sorted(glob.glob(f"{P.FOLDERS['music']}/*.mp3")), value="", label="Background music (workspace/music/*.mp3)")
                 script = gr.Code(value=EXAMPLE, language="json", label="Script JSON (ChatGPT se)", lines=16)
+                with gr.Row():
+                    ex1 = gr.Button("Example: single character", size="sm"); ex2 = gr.Button("Example: multi-character", size="sm")
+                gr.Markdown("**Multi-character:** har line mein optional `\"character\"` (kaun bol raha hai) aur `\"voice\"`. "
+                            "Voice na do toh us character ki default voice (Characters tab) lagegi. `\"with\": [\"other_char\"]` = dono same frame mein. "
+                            "`character` na do toh upar wala default character.")
                 btn = gr.Button("▶ Run", variant="primary")
             with gr.Column():
                 log = gr.Textbox(label="Progress / errors / timings", lines=18, max_lines=40)
@@ -78,7 +90,55 @@ with gr.Blocks(title="Reel Studio") as demo:
             code = P.LANGS[l]; opts = P.speakers_for(code)
             return gr.update(choices=opts, value=opts[0]), gr.update(value=EXAMPLE_HI if code == "hi" else EXAMPLE)
         lang.change(on_lang, lang, [spk, script])
+        ex1.click(lambda: EXAMPLE, None, script); ex2.click(lambda: EXAMPLE_MULTI, None, script)
         btn.click(run, [pid, char, lang, spk, spd, preset, cw, ch, script, music], [log, prev, vid])
+
+    with gr.Tab("Characters"):
+        gr.Markdown("Apne characters — dekho, naye banao (text se ya image upload), default voice set karo, delete karo.")
+        ch_html = gr.HTML(value=P.characters_html())
+        with gr.Accordion("➕ New character (description se, FLUX)", open=True):
+            with gr.Row():
+                nc_name = gr.Textbox(label="Name (e.g. sad_vampire)", scale=1)
+                nc_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), value="Ryan", label="Default voice", scale=1)
+                nc_seed = gr.Number(value=42, label="Seed (dusra look chahiye toh badlo)", precision=0, scale=1)
+            nc_desc = gr.Textbox(label="Look description (English, 1–2 lines: shape, eyes, mouth, props, vibe)", lines=2,
+                                 placeholder="a tiny vampire with oversized cape, two sleepy red eyes, one small frown, holding a juice box, bored vibe")
+            nc_btn = gr.Button("✨ Create (~1–2 min)", variant="primary")
+        with gr.Accordion("⬆ Upload existing image as character", open=False):
+            with gr.Row():
+                up_name = gr.Textbox(label="Name"); up_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), value="Ryan", label="Default voice")
+            up_img = gr.Image(type="filepath", label="Character image (plain background best)")
+            up_btn = gr.Button("Add")
+        with gr.Row():
+            ed_sel = gr.Dropdown(chars, label="Character", scale=2)
+            ed_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), label="Set default voice", scale=2)
+            ed_save = gr.Button("💾 Save voice", scale=1)
+            ed_del = gr.Button("🗑 Delete character", variant="stop", scale=1)
+        ch_msg = gr.Textbox(label="", lines=2)
+
+        def _ch_refresh(msg):
+            cs = list(P.characters())
+            return msg, P.characters_html(), gr.update(choices=cs), gr.update(choices=cs, value=None)
+        def do_create(n, d, v, sd):
+            if not n or not d: return _ch_refresh("❌ naam aur description dono chahiye")
+            try:
+                lang = "hi" if v in P.SPEAKERS_HI else "en"; P.create_character(n, d, sd, v, lang)
+                return _ch_refresh(f"✅ '{P.safe_name(n)}' ban gaya. Pasand nahi? delete karke seed badal ke dobara.")
+            except Exception as e: return _ch_refresh(f"❌ {e}"[-1500:])
+        def do_upload(n, img, v):
+            if not n or not img: return _ch_refresh("❌ naam aur image dono chahiye")
+            P.add_character_from_image(n, img, v, "hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ '{P.safe_name(n)}' added")
+        def do_save_voice(n, v):
+            if not n: return _ch_refresh("❌ character select karo")
+            P.save_profile(n, voice=v, lang="hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ {n} → {v}")
+        def do_del(n):
+            if not n: return _ch_refresh("❌ character select karo")
+            return _ch_refresh(P.delete_character(n))
+        outs = [ch_msg, ch_html, char, ed_sel]
+        nc_btn.click(do_create, [nc_name, nc_desc, nc_voice, nc_seed], outs)
+        up_btn.click(do_upload, [up_name, up_img, up_voice], outs)
+        ed_save.click(do_save_voice, [ed_sel, ed_voice], outs)
+        ed_del.click(do_del, ed_sel, outs)
 
     with gr.Tab("Library"):
         gr.Markdown("Saare projects — timings ke saath. Delete = video + audio + images + subtitles + metadata sab hat jaata hai.")
@@ -118,6 +178,10 @@ with gr.Blocks(title="Reel Studio") as demo:
         sys_btn.click(sys_html, None, sys_box)
 
     # page load/refresh pe sab dobara scan (pehle static tha — isi liye table '—' dikhati thi)
-    demo.load(lambda: (P.voice_samples_html(), P.library_table(), gr.update(choices=lib_choices()), sys_html()), None, [samples_html, lib_html, lib_sel, sys_box])
+    def _on_load():
+        cs = list(P.characters())
+        return (P.voice_samples_html(), P.library_table(), gr.update(choices=lib_choices()), sys_html(),
+                P.characters_html(), gr.update(choices=cs, value=cs[0] if cs else None), gr.update(choices=cs))
+    demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, char, ed_sel])
 
 demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)

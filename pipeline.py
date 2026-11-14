@@ -42,6 +42,52 @@ STYLE = ("flat 2D vector illustration, thick clean black outlines, muted dark pa
 def get_hash(s: str) -> str: return hashlib.sha256(s.encode()).hexdigest()[:16]
 def characters(): return {os.path.basename(p)[:-4]: p for p in sorted(glob.glob(f"{CHAR_DIR}/*.png")) if not os.path.basename(p).startswith("_")}
 
+# ---------------- character profiles (default voice/lang/desc per character) ----------------
+PROFILES_PATH = os.path.join(CHAR_DIR, "_profiles.json")
+def load_profiles():
+    try: return json.load(open(PROFILES_PATH))
+    except Exception: return {}
+def save_profile(name, **kw):
+    p = load_profiles(); p.setdefault(name, {}).update({k: v for k, v in kw.items() if v is not None}); json.dump(p, open(PROFILES_PATH, "w"), ensure_ascii=False, indent=1)
+def profile(name): return load_profiles().get(name, {})
+
+CHAR_STYLE = ("flat 2D vector illustration, thick clean black outlines, muted dark palette with one accent color, "
+              "simple shapes, one single character, exactly two eyes and exactly one mouth on the head, "
+              "no text, plain dark background, character design sheet, front view, full body")
+def safe_name(n): return "".join(c if c.isalnum() or c in "-_" else "_" for c in n.strip().lower())[:40] or f"char_{int(time.time())}"
+
+def create_character(name, desc, seed=42, voice=None, lang="en"):
+    """Naya character: description -> FLUX text2img -> characters/<name>.png (+ profile)."""
+    name = safe_name(name); out = os.path.join(CHAR_DIR, f"{name}.png")
+    if os.path.exists(out): raise ValueError(f"'{name}' pehle se hai — dusra naam do ya pehle delete karo")
+    run_flux_jobs([{"prompt": f"{desc}, {CHAR_STYLE}", "out": out, "width": 768, "height": 1024, "seed": int(seed)}])
+    save_profile(name, desc=desc, voice=voice, lang=lang, seed=int(seed), created=time.strftime("%Y-%m-%d %H:%M"))
+    return out
+
+def add_character_from_image(name, image_path, voice=None, lang="en"):
+    name = safe_name(name); out = os.path.join(CHAR_DIR, f"{name}.png")
+    Image.open(image_path).convert("RGB").save(out); save_profile(name, voice=voice, lang=lang, desc="(uploaded)", created=time.strftime("%Y-%m-%d %H:%M"))
+    return out
+
+def delete_character(name):
+    p = os.path.join(CHAR_DIR, f"{name}.png")
+    if os.path.exists(p): os.remove(p)
+    prof = load_profiles(); prof.pop(name, None); json.dump(prof, open(PROFILES_PATH, "w"), ensure_ascii=False, indent=1)
+    return f"🗑 character '{name}' deleted (videos jo isse bane the woh rahenge)"
+
+def characters_html():
+    import base64
+    chars = characters(); prof = load_profiles()
+    if not chars: return "<p>(koi character nahi — neeche banao ya upload karo)</p>"
+    cards = []
+    for n, p in chars.items():
+        im = Image.open(p).convert("RGB"); im.thumbnail((160, 220)); import io; b = io.BytesIO(); im.save(b, "JPEG", quality=80)
+        pr = prof.get(n, {})
+        cards.append(f"<div style='display:inline-block;width:170px;margin:6px;vertical-align:top;text-align:center;font-size:12px'>"
+                     f"<img src='data:image/jpeg;base64,{base64.b64encode(b.getvalue()).decode()}' style='border-radius:6px'><br><b>{n}</b><br>"
+                     f"voice: {pr.get('voice','(default)')} · {pr.get('lang','en')}</div>")
+    return "".join(cards)
+
 # ---------------- device / system info ----------------
 _DEV = {"tts": "not loaded yet", "images": "MLX (Metal GPU) via mflux", "whisper": "CPU int8"}
 def device_info():
@@ -110,9 +156,10 @@ def speed_up(path, factor):
     return out
 
 # ---------------- images ----------------
-def run_flux_jobs(ref, items, quantize=4):
-    jf = os.path.join(WS, f"_flux_jobs_{int(time.time())}.json")
-    json.dump({"ref": ref, "quantize": quantize, "items": items}, open(jf, "w"))
+def run_flux_jobs(items, quantize=4):
+    """items: [{prompt, out, width, height, seed, refs:[...]}]. refs khali = text2img."""
+    jf = os.path.join(WS, f"_flux_jobs_{int(time.time()*1000)}.json")
+    json.dump({"quantize": quantize, "items": items}, open(jf, "w"))
     r = subprocess.run([MFLUX_PY, os.path.join(ROOT, "flux_worker.py"), jf], capture_output=True, text=True)
     os.remove(jf)
     if r.returncode != 0: raise RuntimeError("mflux worker failed:\n" + (r.stderr or "")[-2500:])
@@ -172,38 +219,57 @@ def text_overlay(text, w, h, lang="en", highlight=None):
 def make_reel(project_id, character, speaker, speed, script, music_file=None, lang="en", size=(1080, 1920), log=print):
     """Yields (status_text, latest_image_path, video_path_or_None). Timings + metadata -> workspace/projects/<id>.json"""
     W, H = int(size[0]), int(size[1]); FPS = 30
-    ref_path = characters()[character]
+    chars = characters()
+    # Multi-character: har line mein optional "character" aur "voice". Na ho toh default (UI wala).
+    # Voice priority: line["voice"] > character profile voice > default speaker.
+    for i, s in enumerate(script):
+        c = s.get("character") or character
+        if c not in chars: raise ValueError(f"line {i+1}: character '{c}' nahi mila. Available: {', '.join(chars)}")
+        s["_char"] = c
+        s["_voice"] = s.get("voice") or (profile(c).get("voice") if s.get("character") else None) or speaker
+        if lang == "en" and s["_voice"] not in SPEAKERS_EN: s["_voice"] = speaker
+        if lang == "hi" and s["_voice"] not in SPEAKERS_HI: s["_voice"] = speaker
     project_id = (project_id or "").strip() or f"reel_{int(time.time())}"
     def pdir(k): p = os.path.join(FOLDERS[k], project_id); os.makedirs(p, exist_ok=True); return p
     lines, T = [], {}
     def say(m): lines.append(m); log(m); return "\n".join(lines)
     meta_path = os.path.join(FOLDERS["projects"], f"{project_id}.json")
-    meta = {"project_id": project_id, "character": character, "voice": speaker, "lang": lang, "speed": speed, "size": [W, H],
-            "slides": len(script), "script": script, "created": time.strftime("%Y-%m-%d %H:%M"), "status": "running"}
+    used_chars = sorted({x["_char"] for x in script}); used_voices = sorted({x["_voice"] for x in script})
+    clean_script = [{k: v for k, v in x.items() if not k.startswith("_")} for x in script]
+    meta = {"project_id": project_id, "character": ", ".join(used_chars), "voice": ", ".join(used_voices), "lang": lang, "speed": speed, "size": [W, H],
+            "slides": len(script), "script": clean_script, "created": time.strftime("%Y-%m-%d %H:%M"), "status": "running"}
     json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=1)
     t_all = time.time()
-    yield say(f"▶ {project_id} | {character} | {speaker} ({lang}) | {speed}x | {W}x{H} | {len(script)} slides"), None, None
+    yield say(f"▶ {project_id} | {', '.join(used_chars)} | {', '.join(used_voices)} ({lang}) | {speed}x | {W}x{H} | {len(script)} slides"), None, None
 
     # 1) TTS
     t0 = time.time(); audio = []
     for i, s in enumerate(script):
-        inst = s.get("instruct", ""); p = os.path.join(pdir("audio"), f"s{i:02d}_{get_hash(s['line'] + speaker + inst + lang)}.wav")
-        if not os.path.exists(p): tts_line(s["line"], lang, speaker, inst, p)
+        v = s["_voice"]; inst = s.get("instruct", "")
+        p = os.path.join(pdir("audio"), f"s{i:02d}_{get_hash(s['line'] + v + inst + lang)}.wav")
+        if not os.path.exists(p): tts_line(s["line"], lang, v, inst, p)
         audio.append(speed_up(p, float(speed)))
-        yield say(f"  🎙 voice {i+1}/{len(script)}"), None, None
+        yield say(f"  🎙 voice {i+1}/{len(script)}  [{s['_char']} · {v}]"), None, None
     if lang == "en": free_tts()
     T["tts_s"] = round(time.time() - t0, 1)
 
     # 2) Images
     t0 = time.time(); gw, gh = gen_size_for(W, H); images, jobs = [], []
     for i, s in enumerate(script):
-        prompt = f"The same character from the reference image, now {s['image_prompt']}. Keep the exact same character design. {STYLE}"
-        p = os.path.join(pdir("images"), f"s{i:02d}_{get_hash(prompt + character + f'{gw}x{gh}')}.png")
+        # "with": [other characters] -> same frame mein dono (multi-reference)
+        extra = [c for c in (s.get("with") or []) if c in chars and c != s["_char"]]
+        refs = [chars[s["_char"]]] + [chars[c] for c in extra]
+        if extra:
+            prompt = (f"The characters from the reference images together in one scene: {s['image_prompt']}. "
+                      f"Keep each character's exact design from its reference. {STYLE.replace('one single character, ', '')}")
+        else:
+            prompt = f"The same character from the reference image, now {s['image_prompt']}. Keep the exact same character design. {STYLE}"
+        p = os.path.join(pdir("images"), f"s{i:02d}_{get_hash(prompt + '|'.join(refs) + f'{gw}x{gh}')}.png")
         images.append(p)
-        if not os.path.exists(p): jobs.append({"prompt": prompt, "out": p.replace(".png", "_raw.png"), "width": gw, "height": gh, "seed": 7})
+        if not os.path.exists(p): jobs.append({"prompt": prompt, "out": p.replace(".png", "_raw.png"), "width": gw, "height": gh, "seed": 7, "refs": refs})
     if jobs:
         yield say(f"  🖼 generating {len(jobs)} images @ {gw}x{gh} (FLUX on Metal; pehli baar model load ~1 min)..."), None, None
-        run_flux_jobs(ref_path, jobs)
+        run_flux_jobs(jobs)
         for j in jobs: fit_to_canvas(Image.open(j["out"]).convert("RGB"), W, H).save(j["out"].replace("_raw.png", ".png"))
     T["images_s"] = round(time.time() - t0, 1)
     yield say(f"  🖼 images ready {len(images)}/{len(script)}  ({T['images_s']}s)"), images[-1], None

@@ -1,33 +1,42 @@
 # Reel Studio — Mac (Apple Silicon)
 
-Colab pipeline ka Mac version. Sab local, sab open-source, koi session limit nahi.
+Faceless reel/short/video factory. Sab local, sab open-source, koi session limit nahi.
 
-- Voice: Qwen3-TTS 1.7B (MPS / CPU)
-- Images: FLUX.2 klein 4B, 4-bit via mflux (MLX) — reference image se consistent character
-- Subtitles: faster-whisper (CPU)
-- Render: moviepy + ffmpeg
+| Part | Model | Runs on |
+|---|---|---|
+| Voice (English) | Qwen3-TTS 1.7B — `instruct` se emotion | Apple GPU (MPS), CPU fallback |
+| Voice (Hindi) | Edge-TTS Madhur / Swara | Microsoft online (free), speed only |
+| Images | FLUX.2 klein 4B, 4-bit (mflux) — reference image = consistent character | Apple GPU (MLX / Metal) |
+| Subtitles | faster-whisper small | CPU |
+| Render | moviepy + ffmpeg | CPU |
 
-## Setup (ek baar, ~15 min) — do venv bante hain (.venv = TTS/render, .venv-mflux = images), kyunki mflux aur qwen-tts alag transformers chahte hain
+## Setup (ek baar)
 ```bash
-cd mac_reel_studio
 bash setup.sh
+.venv/bin/python make_characters.py   # 6 default characters (ya Characters tab se apne)
+bash run.sh                           # http://127.0.0.1:7860
 ```
-Phir apne character PNGs `characters/` mein daalo (Drive → `faceless_finance_pipeline/images/character_concepts/*.png`),
-ya naye banao: `.venv-mflux/bin/python make_characters.py`
+Do venv: `.venv` (TTS/whisper/render/UI) + `.venv-mflux` (images) — mflux aur qwen-tts alag transformers chahte hain.
 
-## Chalao
-```bash
-bash run.sh
-```
-Browser khulega → script paste → character → Run. Videos: `workspace/videos/`.
-Pehli baar models download honge (~8GB). Pehla reel slow (models load), uske baad ~2–3 min per 4-slide reel.
+## Tabs
+- **Create** — character, language, voice, speed, size preset (Reels 9:16 / YouTube 16:9 / Square / 4:5 / custom), music, script → Run. Progress mein har phase ka time.
+- **Characters** — gallery, naya character (description se ya image upload), default voice set, delete.
+- **Library** — saare videos, thumbnail, length, kitne second mein bana (tts/images/subs/render), Play, Delete (video + audio + images + subs + metadata sab).
+- **Voices** — 9 EN voices × 3 moods + 2 Hindi, pre-built samples (ek baar Build).
+- **System** — MPS available? TTS kis device pe chal raha hai, RAM, workspace size.
 
-## Script format (ChatGPT se)
+## Script format
 ```json
-[{"line": "...", "instruct": "deadpan, fast", "pause": 0.5, "image_prompt": "..."}]
+[
+  {"line": "...", "instruct": "deadpan, fast", "pause": 0.5, "image_prompt": "..."}
+]
 ```
+Multi-character — har line mein optional:
+- `"character": "reaper_intern"` — kaun bol raha hai (frame mein woh dikhega)
+- `"voice": "Eric"` — is line ki voice (na do toh character ki default voice)
+- `"with": ["ghost_therapy"]` — dusra character bhi same frame mein
 
-## Agar kuch toote
-- `qwen-tts` MPS pe fail ho → automatically CPU pe chalega (slow par sahi)
-- Memory warning → Terminal mein `export MFLUX_LOW_RAM=1` nahi hai; instead `pipeline.py` mein `quantize=4` already hai. Dusre heavy apps band karo (Chrome tabs!)
-- `ffmpeg not found` → `brew install ffmpeg`
+Hindi: Language = Hindi, `line` Devanagari mein likho (Hinglish roman nahi). `instruct` Hindi mein kaam nahi karta.
+
+## Errors
+Progress box mein full traceback + `workspace/logs/last_error.txt`.
