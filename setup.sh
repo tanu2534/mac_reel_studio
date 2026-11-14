@@ -15,7 +15,7 @@ echo "== 2/4 Main venv (TTS + whisper + render + UI) =="
 [ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q torch torchaudio
-.venv/bin/pip install -q qwen-tts "transformers==4.57.3" faster-whisper "moviepy==1.0.3" gradio librosa soundfile pillow numpy
+.venv/bin/pip install -q qwen-tts "transformers==4.57.3" edge-tts faster-whisper "moviepy==1.0.3" gradio librosa soundfile pillow numpy
 
 echo "== 3/4 Image venv (mflux — alag, kyunki ye naya transformers chahta hai) =="
 [ -d .venv-mflux ] || "$PY" -m venv .venv-mflux
