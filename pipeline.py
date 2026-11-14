@@ -4,6 +4,8 @@ TTS: Qwen3-TTS (MPS, CPU fallback) | Images: FLUX.2 klein 4B via mflux (MLX, 4-b
 """
 import os, gc, json, glob, time, hashlib, tempfile, subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+# moviepy 1.0.3 purani Pillow ka Image.ANTIALIAS use karta hai (Pillow 10+ mein hata diya) -> AttributeError on render. Patch:
+if not hasattr(Image, "ANTIALIAS"): Image.ANTIALIAS = Image.LANCZOS
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WS = os.path.join(ROOT, "workspace")
@@ -192,6 +194,62 @@ def preview_voice(speaker, instruct="deadpan, dry, fast", speed=1.2, text=None):
         wavs, sr = get_tts().generate_custom_voice(text=text, language="English", speaker=speaker, instruct=instruct or None)
         sf.write(p, wavs[0], sr)
     return speed_up(p, float(speed))
+
+MOODS = {"deadpan_fast": "deadpan, dry, fast", "creepy_whisper": "slow whisper, creepy, close", "cheerful_quick": "cheerful, upbeat, quick, sales pitch"}
+def sample_path(speaker, mood, speed=1.2):
+    d = os.path.join(FOLDERS["audio"], "_previews"); os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"sample_{speaker}_{mood}_x{float(speed):.2f}.wav")
+
+def build_voice_samples(speed=1.2, log=print):
+    """9 voices x 3 moods, ek baar. UI inhe seedha dikhata hai (koi generate wait nahi)."""
+    import soundfile as sf
+    todo = [(s, m) for s in SPEAKERS for m in MOODS if not os.path.exists(sample_path(s, m, speed))]
+    if not todo: log("voice samples already built"); return
+    for i, (s, m) in enumerate(todo, 1):
+        raw = sample_path(s, m, speed).replace(f"_x{float(speed):.2f}.wav", "_raw.wav")
+        if not os.path.exists(raw):
+            wavs, sr = get_tts().generate_custom_voice(text=PREVIEW_LINE, language="English", speaker=s, instruct=MOODS[m])
+            sf.write(raw, wavs[0], sr)
+        out = speed_up(raw, speed)
+        if out != sample_path(s, m, speed): os.replace(out, sample_path(s, m, speed))
+        log(f"  [{i}/{len(todo)}] {s} / {m}")
+    free_tts(); log("✅ voice samples ready")
+
+def build_voice_samples_iter(speed=1.2):
+    """Same as build_voice_samples, par progress lines yield karta hai (UI ke liye)."""
+    import soundfile as sf
+    lines = []
+    todo = [(s, m) for s in SPEAKERS for m in MOODS if not os.path.exists(sample_path(s, m, speed))]
+    if not todo:
+        lines.append("✅ saare samples pehle se bane hain"); yield lines; return
+    lines.append(f"TTS model load ho raha hai... ({len(todo)} samples banenge)"); yield lines
+    for i, (s, m) in enumerate(todo, 1):
+        raw = sample_path(s, m, speed).replace(f"_x{float(speed):.2f}.wav", "_raw.wav")
+        if not os.path.exists(raw):
+            wavs, sr = get_tts().generate_custom_voice(text=PREVIEW_LINE, language="English", speaker=s, instruct=MOODS[m])
+            sf.write(raw, wavs[0], sr)
+        out = speed_up(raw, speed)
+        if out != sample_path(s, m, speed): os.replace(out, sample_path(s, m, speed))
+        lines[-1] = f"[{i}/{len(todo)}] {s} / {m}"; yield lines
+    free_tts(); lines.append("✅ done"); yield lines
+
+def voice_samples_html(speed=1.2):
+    import base64
+    rows = ['<table style="border-collapse:collapse;width:100%"><tr><th style="text-align:left">Voice</th>' + "".join(f"<th style='text-align:left'>{m}</th>" for m in MOODS) + "</tr>"]
+    missing = 0
+    for s in SPEAKERS:
+        cells = []
+        for m in MOODS:
+            p = sample_path(s, m, speed)
+            if os.path.exists(p):
+                b64 = base64.b64encode(open(p, "rb").read()).decode()
+                cells.append(f'<td><audio controls src="data:audio/wav;base64,{b64}" style="height:30px;width:180px"></audio></td>')
+            else:
+                cells.append("<td style='color:#888'>—</td>"); missing += 1
+        rows.append(f"<tr><td><b>{s}</b></td>{''.join(cells)}</tr>")
+    rows.append("</table>")
+    if missing: rows.insert(0, f"<p style='color:#e8a33d'>⚠ {missing} samples abhi nahi bane — 'Build all samples' dabao (ek baar, ~3 min)</p>")
+    return "".join(rows)
 
 def list_videos():
     vs = sorted(glob.glob(f"{FOLDERS['videos']}/*.mp4"), key=os.path.getmtime, reverse=True)
