@@ -238,6 +238,19 @@ def text_overlay(text, w, h, lang="en", highlight=None):
 # ---------------- main ----------------
 NO_CHAR = {None, "", "none", "(no character)", "narrator"}
 
+_FEMALE = ("girl", "woman", "lady", "female", "she ", " her ", "mother", "mom", "grandma", "grandmother", "witch", "queen", "princess",
+           "daughter", "sister", "wife", "bride", "nun", "maid", "aunt", "ladki", "aurat")
+_OLD_MALE = ("old man", "grandpa", "grandfather", "elderly man", "old wizard", "old priest", "uncle")
+def guess_voice(desc, lang="en", used=()):
+    """Look description se voice: female -> female voice, old man -> deep voice, warna male. Ek video mein har character alag voice."""
+    d = f" {desc.lower()} "
+    if lang == "hi":
+        return "Swara (female)" if any(k in d for k in _FEMALE) else "Madhur (male)"
+    if any(k in d for k in _FEMALE): pool = ["Vivian", "Serena", "Ono_Anna", "Sohee"]
+    elif any(k in d for k in _OLD_MALE): pool = ["Uncle_Fu", "Eric", "Ryan"]
+    else: pool = ["Aiden", "Eric", "Dylan", "Uncle_Fu", "Ryan"]
+    return next((v for v in pool if v not in used), pool[0])
+
 def make_reel(project_id, script, narrator_voice, speed=1.2, music_file=None, lang="en", size=(1080, 1920),
               style="Flat cartoon (dark)", log=print, character=None):
     """Scenes -> video. Yields (status_text, latest_image_path, video_path_or_None).
@@ -253,16 +266,30 @@ def make_reel(project_id, script, narrator_voice, speed=1.2, music_file=None, la
         if c and c not in chars:
             desc = (s.get("new_character_desc") or "").strip()
             if not desc and safe_name(c) in chars: c = safe_name(c)
-            elif not desc: raise ValueError(f"scene {i+1}: character '{c}' nahi mila aur uska description bhi nahi diya")
+            elif not desc and safe_name(c) in new_chars: c = safe_name(c)
+            elif not desc:
+                later = next((x.get("new_character_desc") for x in script if safe_name(x.get("character") or "") == safe_name(c) and x.get("new_character_desc")), None)
+                if later: new_chars.setdefault(safe_name(c), later); c = safe_name(c)
+                else: raise ValueError(f"scene {i+1}: character '{c}' nahi mila aur uska description bhi nahi diya")
             else: new_chars.setdefault(safe_name(c), desc); c = safe_name(c)
         s["_char"] = c
-    # --- resolve voices: scene voice > character default > narrator ---
+    # --- voice casting ---
+    # scene "voice" > character's saved voice > first "voice" given for that character anywhere in script > auto (gender from look, distinct per character)
     valid = SPEAKERS_EN if lang == "en" else list(SPEAKERS_HI)
+    if narrator_voice not in valid: narrator_voice = valid[0]
+    cast, used = {}, {narrator_voice}
+    for s in script:
+        c = s["_char"]
+        if not c or c in cast: continue
+        v = profile(c).get("voice") if c not in new_chars else None
+        if v not in valid:
+            v = next((x.get("voice") for x in script if x["_char"] == c and x.get("voice") in valid), None)
+        if v not in valid:
+            v = guess_voice(new_chars.get(c) or profile(c).get("desc", "") or c, lang, used)
+        cast[c] = v; used.add(v)
     for s in script:
         v = s.get("voice")
-        if v in (None, "", "(character default)", "(default)"):
-            v = profile(s["_char"]).get("voice") if s["_char"] else None
-        s["_voice"] = v if v in valid else narrator_voice
+        s["_voice"] = v if v in valid else (cast.get(s["_char"]) if s["_char"] else narrator_voice)
     project_id = (project_id or "").strip() or f"reel_{int(time.time())}"
     def pdir(k): p = os.path.join(FOLDERS[k], project_id); os.makedirs(p, exist_ok=True); return p
     lines, T = [], {}
@@ -274,14 +301,15 @@ def make_reel(project_id, script, narrator_voice, speed=1.2, music_file=None, la
             "slides": len(script), "script": clean_script, "created": time.strftime("%Y-%m-%d %H:%M"), "status": "running"}
     json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=1)
     t_all = time.time()
-    yield say(f"▶ {project_id} | {', '.join(used_chars)} | {', '.join(used_voices)} ({lang}) | {speed}x | {W}x{H} | {style} | {len(script)} scenes"), None, None
+    yield say(f"▶ {project_id} | {speed}x | {W}x{H} | {style} | {len(script)} scenes"), None, None
+    yield say("  🎭 voice cast: narrator → " + narrator_voice + "".join(f" · {c} → {v}" for c, v in cast.items())), None, None
 
     # 0) inline new characters (same style as video)
     if new_chars:
         t0 = time.time()
         for n, d in new_chars.items():
             yield say(f"  ✨ new character '{n}' bana raha hoon ({style})..."), None, None
-            create_character(n, d, voice=narrator_voice, lang=lang, style=style)
+            create_character(n, d, voice=cast.get(n), lang=lang, style=style)
         chars = characters(); T["new_chars_s"] = round(time.time() - t0, 1)
 
     # 1) TTS
