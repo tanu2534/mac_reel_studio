@@ -42,15 +42,27 @@ def to_pipeline(sc):
 def from_json(text, default_char):
     data = json.loads(text)
     assert isinstance(data, list), "JSON ek list honi chahiye: [ {...}, {...} ]"
-    cs = P.characters(); sc = []
+    cs = P.characters()
+    # pass 1: naye characters ka look (pehli baar jahan diya ho) — baad ke scenes wahi reuse karenge
+    new_desc = {}
+    for x in data:
+        c = x.get("character")
+        if c and c not in cs and P.safe_name(c) not in cs and x.get("new_character_desc"):
+            new_desc.setdefault(P.safe_name(c), x["new_character_desc"])
+    known = set(cs) | set(new_desc)
+    sc = []
     for x in data:
         s = blank_scene(); s.update({"line": x.get("line", ""), "image_prompt": x.get("image_prompt", x.get("scene", "")),
                                      "instruct": x.get("instruct", ""), "pause": x.get("pause", 0.3),
-                                     "voice": x.get("voice") or CHAR_DEFAULT, "with": [w for w in (x.get("with") or []) if w in cs]})
+                                     "voice": x.get("voice") or CHAR_DEFAULT,
+                                     "with": [P.safe_name(w) for w in (x.get("with") or []) if P.safe_name(w) in known]})
         c = x.get("character", default_char)
         if c in (None, "", "none", NO_CHAR): s["character"] = NO_CHAR
         elif c in cs: s["character"] = c
-        else: s.update({"character": NEW_CHAR, "new_name": c, "new_desc": x.get("new_character_desc", "")})
+        elif P.safe_name(c) in cs: s["character"] = P.safe_name(c)
+        else:
+            n = P.safe_name(c)
+            s.update({"character": NEW_CHAR, "new_name": n, "new_desc": x.get("new_character_desc") or new_desc.get(n, "")})
         sc.append(s)
     return sc
 
@@ -184,7 +196,9 @@ with gr.Blocks(title="Reel Studio") as demo:
                                 if code == "en":
                                     ins = gr.Textbox(value=s.get("instruct", ""), interactive=True, label="How to say it", placeholder="deadpan, fast", scale=1)
                                     ins.change(lambda st, v, i=i: set_field(st, v, i, "instruct"), [scenes, ins], scenes, queue=False)
-                            others = [x for x in cs if x != s["character"]]
+                            pending_new = sorted({x["new_name"].strip() for x in sc if x["character"] == NEW_CHAR and x["new_name"].strip()})
+                            me = s["new_name"].strip() if s["character"] == NEW_CHAR else s["character"]
+                            others = [x for x in cs + [n for n in pending_new if n not in cs] if x != me]
                             if others:
                                 wf = gr.Dropdown(others, value=[w for w in s.get("with", []) if w in others], multiselect=True,
                                                  interactive=True, label="Also in frame (optional)")

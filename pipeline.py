@@ -294,7 +294,7 @@ def make_reel(project_id, script, narrator_voice, speed=1.2, music_file=None, la
     for i, s in enumerate(script):
         scene = s.get("image_prompt", "")
         main = [s["_char"]] if s["_char"] else []
-        extra = [c for c in (s.get("with") or []) if c in chars and c not in main]
+        extra = [safe_name(c) for c in (s.get("with") or []) if safe_name(c) in chars and safe_name(c) not in main]
         refs = [chars[c] for c in main + extra]
         if not refs:     # no character -> pure scene / b-roll
             prompt = f"{scene}. {st}, no people unless described, no text, no watermark"
