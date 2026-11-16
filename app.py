@@ -75,6 +75,11 @@ Topic: [WRITE TOPIC HERE]
 Existing characters you can use (use the exact name):
 {roster}
 You may also use NO character (a pure scene / b-roll shot): set "character": null.
+
+Available voices (put one in EVERY scene as "voice"; keep the same voice for the same character; narrator scenes use one narrator voice):
+- Male: Ryan (confident, energetic), Aiden (young, friendly), Dylan (young, casual), Eric (calm, good narrator), Uncle_Fu (older, deep, mellow)
+- Female: Vivian (bright, young-sounding), Serena (warm, gentle), Ono_Anna (playful, slight Japanese accent), Sohee (soft, slight Korean accent)
+Match voice to the character's gender and age. There is no child voice — use Vivian for young girls and add "childlike" to instruct.
 You may invent ONE new character: give it a short snake_case name and add "new_character_desc" (look: shape, eyes, mouth, props, vibe).
 
 Rules:
@@ -88,7 +93,7 @@ Rules:
 
 Output ONLY valid JSON, nothing else:
 [
-  {{"character": "name_or_null", "line": "...", "instruct": "...", "pause": 0.3, "image_prompt": "..."}}
+  {{"character": "name_or_null", "voice": "Eric", "line": "...", "instruct": "...", "pause": 0.3, "image_prompt": "..."}}
 ]'''
 
 def _size(preset, cw, ch):
