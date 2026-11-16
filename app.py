@@ -370,4 +370,4 @@ with gr.Blocks(title="Reel Studio") as demo:
                 P.characters_html(), gr.update(choices=cs), chatgpt_prompt(), gr.update(choices=[NO_CHAR] + cs))
     demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, ed_sel, gpt, imp_default])
 
-demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, css=CSS)
+demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, css=CSS, allowed_paths=[P.WS, P.CHAR_DIR])

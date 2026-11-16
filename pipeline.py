@@ -50,6 +50,11 @@ FACE_RULE = "all facial features only on the head, exactly two eyes and exactly 
 def style_text(name): return STYLE_PRESETS.get(name) or list(STYLE_PRESETS.values())[0]
 STYLE = style_text("Flat cartoon (dark)") + ", one single character, " + FACE_RULE + ", no text, simple dark background"
 
+def file_url(path):
+    """Disk file ka browser URL (Gradio serve karta hai) — page mein base64 nahi ghusana, isse load fast."""
+    import urllib.parse
+    return "/gradio_api/file=" + urllib.parse.quote(os.path.abspath(path)) + f"?v={int(os.path.getmtime(path))}"
+
 def get_hash(s: str) -> str: return hashlib.sha256(s.encode()).hexdigest()[:16]
 def characters(): return {os.path.basename(p)[:-4]: p for p in sorted(glob.glob(f"{CHAR_DIR}/*.png")) if not os.path.basename(p).startswith("_")}
 
@@ -94,10 +99,12 @@ def characters_html():
     if not chars: return "<p>(koi character nahi — neeche banao ya upload karo)</p>"
     cards = []
     for n, p in chars.items():
-        im = Image.open(p).convert("RGB"); im.thumbnail((160, 220)); import io; b = io.BytesIO(); im.save(b, "JPEG", quality=80)
+        th = os.path.join(CHAR_DIR, "_thumbs", f"{n}.jpg")
+        if not os.path.exists(th) or os.path.getmtime(th) < os.path.getmtime(p):
+            os.makedirs(os.path.dirname(th), exist_ok=True); im = Image.open(p).convert("RGB"); im.thumbnail((160, 220)); im.save(th, "JPEG", quality=80)
         pr = prof.get(n, {})
         cards.append(f"<div style='display:inline-block;width:170px;margin:6px;vertical-align:top;text-align:center;font-size:12px'>"
-                     f"<img src='data:image/jpeg;base64,{base64.b64encode(b.getvalue()).decode()}' style='border-radius:6px'><br><b>{n}</b><br>"
+                     f"<img src='{file_url(th)}' loading='lazy' style='border-radius:6px'><br><b>{n}</b><br>"
                      f"voice: {pr.get('voice','(default)')} · {pr.get('lang','en')}</div>")
     return "".join(cards)
 
@@ -375,7 +382,7 @@ def library_table():
     for r in rows:
         th = ""
         if r.get("thumb") and os.path.exists(r["thumb"]):
-            th = f"<img src='data:image/jpeg;base64,{base64.b64encode(open(r['thumb'],'rb').read()).decode()}' style='height:64px;border-radius:4px'>"
+            th = f"<img src='{file_url(r['thumb'])}' loading='lazy' style='height:64px;border-radius:4px'>"
         T = r.get("timings", {})
         tm = f"{T.get('tts_s','-')} / {T.get('images_s','-')} / {T.get('whisper_s','-')} / {T.get('render_s','-')}" if T else "-"
         h.append(f"<tr><td>{th}</td><td><b>{r['project_id']}</b></td><td>{r.get('character','')}</td><td>{r.get('voice','')}</td><td>{r.get('lang','en')}</td>"
@@ -438,7 +445,7 @@ def voice_samples_html(speed=1.2):
     import base64
     def cell(p):
         if not os.path.exists(p): return "<td style='color:#888'>—</td>"
-        return f"<td><audio controls src='data:audio/wav;base64,{base64.b64encode(open(p,'rb').read()).decode()}' style='height:30px;width:180px'></audio></td>"
+        return f"<td><audio controls preload='none' src='{file_url(p)}' style='height:30px;width:180px'></audio></td>"
     rows = ["<table style='border-collapse:collapse;width:100%'><tr><th style='text-align:left'>English (Qwen3)</th>" + "".join(f"<th style='text-align:left'>{m}</th>" for m in MOODS) + "</tr>"]
     missing = 0
     for s in SPEAKERS_EN:
