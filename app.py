@@ -236,16 +236,21 @@ with gr.Blocks(title="Reel Studio") as demo:
                 with gr.Accordion("📋 ChatGPT se script laao (JSON import / export)", open=False):
                     gr.Markdown("**1.** Ye prompt copy karke ChatGPT mein do (topic badal ke). **2.** Jo JSON mile, neeche paste karke *Load into scenes*. Phir upar cards mein edit kar sakti ho.")
                     gpt = gr.Code(value=chatgpt_prompt(), language="markdown", label="ChatGPT prompt (copy icon top-right)", lines=12)
+                    gr.Markdown("#### ⬇ Import — ChatGPT ka JSON yahan paste karo")
+                    js = gr.Code(language="json", label="Paste JSON here", lines=12)
                     with gr.Row():
-                        imp_default = gr.Dropdown([NO_CHAR] + list(P.characters()), value=NO_CHAR, label="Lines without 'character' →")
-                        imp_btn = gr.Button("⬇ Load into scenes", variant="primary"); exp_btn = gr.Button("⬆ Export current scenes")
-                    js = gr.Code(language="json", label="JSON", lines=12)
+                        imp_default = gr.Dropdown([NO_CHAR] + list(P.characters()), value=NO_CHAR, label="Lines without 'character' →", scale=1)
+                        imp_btn = gr.Button("⬇ Load into scenes", variant="primary", scale=2)
                     imp_msg = gr.Markdown("")
+                    gr.Markdown("#### ⬆ Export — current scenes ka JSON (backup / ChatGPT ko wapas dene ke liye)")
+                    exp_btn = gr.Button("⬆ Export current scenes", size="sm")
+                    js_out = gr.Code(language="json", label="Exported JSON (alag box — import wala text safe rehta hai)", lines=8)
                     def do_import(text, dflt, r):
-                        try: sc = from_json(text, dflt); return sc, r + 1, f"✅ {len(sc)} scenes loaded"
-                        except Exception as e: return gr.update(), r, f"❌ {e}"
+                        if not (text or "").strip(): return gr.update(), r, "❌ pehle upar wale box mein JSON paste karo"
+                        try: sc = from_json(text, dflt); return sc, r + 1, f"✅ {len(sc)} scenes loaded — upar Scenes mein dekho"
+                        except Exception as e: return gr.update(), r, f"❌ JSON galat hai: {e}"
                     imp_btn.click(do_import, [js, imp_default, rev], [scenes, rev, imp_msg])
-                    exp_btn.click(lambda st: json.dumps(to_pipeline(st), ensure_ascii=False, indent=1), scenes, js)
+                    exp_btn.click(lambda st: json.dumps(to_pipeline(st), ensure_ascii=False, indent=1), scenes, js_out)
 
                 btn = gr.Button("▶ Make video", variant="primary", size="lg")
 
