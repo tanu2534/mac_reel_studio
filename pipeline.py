@@ -35,9 +35,20 @@ SPEAKERS_HI = {"Madhur (male)": "hi-IN-MadhurNeural", "Swara (female)": "hi-IN-S
 SPEAKERS = SPEAKERS_EN
 def speakers_for(lang): return SPEAKERS_EN if lang == "en" else list(SPEAKERS_HI)
 
-STYLE = ("flat 2D vector illustration, thick clean black outlines, muted dark palette with one accent color, "
-         "simple shapes, one single character, all facial features only on the head, exactly two eyes and exactly one mouth, "
-         "no text, simple dark background")
+# ---------------- visual styles (per video) ----------------
+STYLE_PRESETS = {
+    "Flat cartoon (dark)": "flat 2D vector illustration, thick clean black outlines, muted dark palette with one accent color, simple shapes",
+    "Anime": "anime style, cel shading, clean lineart, expressive eyes, vibrant colors, detailed background, studio anime quality",
+    "3D animated": "3D animated feature film style, soft global illumination, stylized cute proportions, subsurface scattering, highly detailed render",
+    "Realistic cinematic": "photorealistic, cinematic film still, dramatic lighting, 35mm lens, shallow depth of field, film grain",
+    "Horror gritty": "dark horror illustration, gritty texture, high contrast, desaturated colors, eerie rim light, unsettling atmosphere",
+    "Webtoon / comic": "korean webtoon comic style, clean lineart, soft cel shading, pastel colors, manhwa panel",
+    "Watercolor storybook": "watercolor storybook illustration, soft paper texture, gentle washes, hand painted",
+    "Pixel art": "16-bit pixel art, retro game style, limited palette, crisp pixels",
+}
+FACE_RULE = "all facial features only on the head, exactly two eyes and exactly one mouth"
+def style_text(name): return STYLE_PRESETS.get(name) or list(STYLE_PRESETS.values())[0]
+STYLE = style_text("Flat cartoon (dark)") + ", one single character, " + FACE_RULE + ", no text, simple dark background"
 
 def get_hash(s: str) -> str: return hashlib.sha256(s.encode()).hexdigest()[:16]
 def characters(): return {os.path.basename(p)[:-4]: p for p in sorted(glob.glob(f"{CHAR_DIR}/*.png")) if not os.path.basename(p).startswith("_")}
@@ -56,12 +67,14 @@ CHAR_STYLE = ("flat 2D vector illustration, thick clean black outlines, muted da
               "no text, plain dark background, character design sheet, front view, full body")
 def safe_name(n): return "".join(c if c.isalnum() or c in "-_" else "_" for c in n.strip().lower())[:40] or f"char_{int(time.time())}"
 
-def create_character(name, desc, seed=42, voice=None, lang="en"):
-    """Naya character: description -> FLUX text2img -> characters/<name>.png (+ profile)."""
+def create_character(name, desc, seed=42, voice=None, lang="en", style="Flat cartoon (dark)"):
+    """Naya character: description -> FLUX text2img (chosen style) -> characters/<name>.png (+ profile)."""
     name = safe_name(name); out = os.path.join(CHAR_DIR, f"{name}.png")
     if os.path.exists(out): raise ValueError(f"'{name}' pehle se hai — dusra naam do ya pehle delete karo")
-    run_flux_jobs([{"prompt": f"{desc}, {CHAR_STYLE}", "out": out, "width": 768, "height": 1024, "seed": int(seed)}])
-    save_profile(name, desc=desc, voice=voice, lang=lang, seed=int(seed), created=time.strftime("%Y-%m-%d %H:%M"))
+    prompt = (f"{desc}, {style_text(style)}, one single character, {FACE_RULE}, full body, front view, "
+              f"plain simple background, character design sheet, no text")
+    run_flux_jobs([{"prompt": prompt, "out": out, "width": 768, "height": 1024, "seed": int(seed)}])
+    save_profile(name, desc=desc, voice=voice, lang=lang, seed=int(seed), style=style, created=time.strftime("%Y-%m-%d %H:%M"))
     return out
 
 def add_character_from_image(name, image_path, voice=None, lang="en"):
@@ -216,31 +229,53 @@ def text_overlay(text, w, h, lang="en", highlight=None):
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False); img.save(tmp.name); return tmp.name
 
 # ---------------- main ----------------
-def make_reel(project_id, character, speaker, speed, script, music_file=None, lang="en", size=(1080, 1920), log=print):
-    """Yields (status_text, latest_image_path, video_path_or_None). Timings + metadata -> workspace/projects/<id>.json"""
+NO_CHAR = {None, "", "none", "(no character)", "narrator"}
+
+def make_reel(project_id, script, narrator_voice, speed=1.2, music_file=None, lang="en", size=(1080, 1920),
+              style="Flat cartoon (dark)", log=print, character=None):
+    """Scenes -> video. Yields (status_text, latest_image_path, video_path_or_None).
+    Har scene: line, image_prompt, optional: character (existing | new name | none), new_character_desc, voice, instruct, pause, with[].
+    character=None/'(no character)' -> sirf scene (b-roll). Naya naam + new_character_desc -> pehle character banta hai (isi style mein)."""
     W, H = int(size[0]), int(size[1]); FPS = 30
     chars = characters()
-    # Multi-character: har line mein optional "character" aur "voice". Na ho toh default (UI wala).
-    # Voice priority: line["voice"] > character profile voice > default speaker.
+    # --- resolve characters (inline new ones get created first) ---
+    new_chars = {}
     for i, s in enumerate(script):
-        c = s.get("character") or character
-        if c not in chars: raise ValueError(f"line {i+1}: character '{c}' nahi mila. Available: {', '.join(chars)}")
+        c = s.get("character", character)
+        c = None if (c in NO_CHAR or (isinstance(c, str) and c.strip().lower() in NO_CHAR)) else c
+        if c and c not in chars:
+            desc = (s.get("new_character_desc") or "").strip()
+            if not desc and safe_name(c) in chars: c = safe_name(c)
+            elif not desc: raise ValueError(f"scene {i+1}: character '{c}' nahi mila aur uska description bhi nahi diya")
+            else: new_chars.setdefault(safe_name(c), desc); c = safe_name(c)
         s["_char"] = c
-        s["_voice"] = s.get("voice") or (profile(c).get("voice") if s.get("character") else None) or speaker
-        if lang == "en" and s["_voice"] not in SPEAKERS_EN: s["_voice"] = speaker
-        if lang == "hi" and s["_voice"] not in SPEAKERS_HI: s["_voice"] = speaker
+    # --- resolve voices: scene voice > character default > narrator ---
+    valid = SPEAKERS_EN if lang == "en" else list(SPEAKERS_HI)
+    for s in script:
+        v = s.get("voice")
+        if v in (None, "", "(character default)", "(default)"):
+            v = profile(s["_char"]).get("voice") if s["_char"] else None
+        s["_voice"] = v if v in valid else narrator_voice
     project_id = (project_id or "").strip() or f"reel_{int(time.time())}"
     def pdir(k): p = os.path.join(FOLDERS[k], project_id); os.makedirs(p, exist_ok=True); return p
     lines, T = [], {}
     def say(m): lines.append(m); log(m); return "\n".join(lines)
     meta_path = os.path.join(FOLDERS["projects"], f"{project_id}.json")
-    used_chars = sorted({x["_char"] for x in script}); used_voices = sorted({x["_voice"] for x in script})
+    used_chars = sorted({x["_char"] or "(no char)" for x in script}); used_voices = sorted({x["_voice"] for x in script})
     clean_script = [{k: v for k, v in x.items() if not k.startswith("_")} for x in script]
-    meta = {"project_id": project_id, "character": ", ".join(used_chars), "voice": ", ".join(used_voices), "lang": lang, "speed": speed, "size": [W, H],
+    meta = {"project_id": project_id, "character": ", ".join(used_chars), "voice": ", ".join(used_voices), "lang": lang, "speed": speed, "size": [W, H], "style": style,
             "slides": len(script), "script": clean_script, "created": time.strftime("%Y-%m-%d %H:%M"), "status": "running"}
     json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=1)
     t_all = time.time()
-    yield say(f"▶ {project_id} | {', '.join(used_chars)} | {', '.join(used_voices)} ({lang}) | {speed}x | {W}x{H} | {len(script)} slides"), None, None
+    yield say(f"▶ {project_id} | {', '.join(used_chars)} | {', '.join(used_voices)} ({lang}) | {speed}x | {W}x{H} | {style} | {len(script)} scenes"), None, None
+
+    # 0) inline new characters (same style as video)
+    if new_chars:
+        t0 = time.time()
+        for n, d in new_chars.items():
+            yield say(f"  ✨ new character '{n}' bana raha hoon ({style})..."), None, None
+            create_character(n, d, voice=narrator_voice, lang=lang, style=style)
+        chars = characters(); T["new_chars_s"] = round(time.time() - t0, 1)
 
     # 1) TTS
     t0 = time.time(); audio = []
@@ -249,24 +284,29 @@ def make_reel(project_id, character, speaker, speed, script, music_file=None, la
         p = os.path.join(pdir("audio"), f"s{i:02d}_{get_hash(s['line'] + v + inst + lang)}.wav")
         if not os.path.exists(p): tts_line(s["line"], lang, v, inst, p)
         audio.append(speed_up(p, float(speed)))
-        yield say(f"  🎙 voice {i+1}/{len(script)}  [{s['_char']} · {v}]"), None, None
+        yield say(f"  🎙 voice {i+1}/{len(script)}  [{s['_char'] or 'narrator'} · {v}]"), None, None
     if lang == "en": free_tts()
     T["tts_s"] = round(time.time() - t0, 1)
 
     # 2) Images
     t0 = time.time(); gw, gh = gen_size_for(W, H); images, jobs = [], []
+    st = style_text(style)
     for i, s in enumerate(script):
-        # "with": [other characters] -> same frame mein dono (multi-reference)
-        extra = [c for c in (s.get("with") or []) if c in chars and c != s["_char"]]
-        refs = [chars[s["_char"]]] + [chars[c] for c in extra]
-        if extra:
-            prompt = (f"The characters from the reference images together in one scene: {s['image_prompt']}. "
-                      f"Keep each character's exact design from its reference. {STYLE.replace('one single character, ', '')}")
+        scene = s.get("image_prompt", "")
+        main = [s["_char"]] if s["_char"] else []
+        extra = [c for c in (s.get("with") or []) if c in chars and c not in main]
+        refs = [chars[c] for c in main + extra]
+        if not refs:     # no character -> pure scene / b-roll
+            prompt = f"{scene}. {st}, no people unless described, no text, no watermark"
+        elif len(refs) > 1:
+            prompt = (f"The characters from the reference images together in one scene: {scene}. "
+                      f"Keep each character's exact design from its reference. Render in this style: {st}. {FACE_RULE}. no text")
         else:
-            prompt = f"The same character from the reference image, now {s['image_prompt']}. Keep the exact same character design. {STYLE}"
+            prompt = (f"The same character from the reference image, now {scene}. Keep the exact same character design. "
+                      f"Render in this style: {st}. one single character, {FACE_RULE}. no text")
         p = os.path.join(pdir("images"), f"s{i:02d}_{get_hash(prompt + '|'.join(refs) + f'{gw}x{gh}')}.png")
         images.append(p)
-        if not os.path.exists(p): jobs.append({"prompt": prompt, "out": p.replace(".png", "_raw.png"), "width": gw, "height": gh, "seed": 7, "refs": refs})
+        if not os.path.exists(p): jobs.append({"prompt": prompt, "out": p.replace(".png", "_raw.png"), "width": gw, "height": gh, "seed": 7 + i, "refs": refs})
     if jobs:
         yield say(f"  🖼 generating {len(jobs)} images @ {gw}x{gh} (FLUX on Metal; pehli baar model load ~1 min)..."), None, None
         run_flux_jobs(jobs)

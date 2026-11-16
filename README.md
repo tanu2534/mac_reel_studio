@@ -18,6 +18,12 @@ bash run.sh                           # http://127.0.0.1:7860
 ```
 Do venv: `.venv` (TTS/whisper/render/UI) + `.venv-mflux` (images) — mflux aur qwen-tts alag transformers chahte hain.
 
+## Create tab (no JSON needed)
+1. **Video settings** — project name, visual style (flat cartoon / anime / 3D / realistic / horror / webtoon / watercolor / pixel), size, language, narrator voice, speed, music.
+2. **Scenes** — har scene ek card: *Who's in this scene* (`(no character)` = sirf background/b-roll, existing character, ya `+ New character` → naam + look, Run pe isi style mein ban jayega), voice, line, scene/background, how to say it, pause, also-in-frame. ↑ ↓ ⧉ 🗑 se order/duplicate/delete.
+3. **ChatGPT se** — accordion mein ready prompt (tumhare characters ke naam ke saath) + JSON import/export.
+Library → *Open in editor* se purana video dobara edit karke naya version.
+
 ## Tabs
 - **Create** — character, language, voice, speed, size preset (Reels 9:16 / YouTube 16:9 / Square / 4:5 / custom), music, script → Run. Progress mein har phase ka time.
 - **Characters** — gallery, naya character (description se ya image upload), default voice set, delete.

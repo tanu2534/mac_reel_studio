@@ -1,45 +1,105 @@
 """Reel Studio UI — bash run.sh  ->  http://127.0.0.1:7860"""
-import json, glob, os, time, traceback
+import json, glob, os, time, traceback, copy
 import gradio as gr
 import pipeline as P
 
-EXAMPLE = json.dumps([
-  {"line": "My therapist asked what haunts me. Sir... I am the haunting.", "instruct": "deadpan, dry, fast", "pause": 0.5,
-   "image_prompt": "sitting on a therapy couch, arms crossed"},
-  {"line": "Follow for more dead-end advice.", "instruct": "cheerful, upbeat, quick", "pause": 0.0,
-   "image_prompt": "waving at camera"}], indent=1)
-EXAMPLE_MULTI = json.dumps([
-  {"character": "ghost_therapy", "line": "Doc, I think I'm overthinking.", "instruct": "tired, fast", "pause": 0.3,
-   "image_prompt": "lying on a therapy couch, staring at the ceiling"},
-  {"character": "reaper_intern", "line": "Sir, you're dead. That's the least of your problems.", "instruct": "nervous, quick", "pause": 0.6,
-   "image_prompt": "sitting in a therapist chair with a clipboard and coffee"},
-  {"character": "ghost_therapy", "with": ["reaper_intern"], "line": "Great. My therapist is an intern.", "instruct": "deadpan, dry", "pause": 0.0,
-   "image_prompt": "a ghost on a couch and a tiny reaper in a chair facing each other in a therapy office"}], indent=1)
-EXAMPLE_HI = json.dumps([
-  {"line": "थेरेपिस्ट ने पूछा, तुम्हें क्या सताता है? सर... मैं ही सताता हूँ।", "pause": 0.5,
-   "image_prompt": "sitting on a therapy couch, arms crossed"},
-  {"line": "फॉलो करो, और बेकार सलाह के लिए।", "pause": 0.0, "image_prompt": "waving at camera"}], indent=1, ensure_ascii=False)
+NO_CHAR, NEW_CHAR, CHAR_DEFAULT = "(no character)", "+ New character", "(character default)"
+
+def blank_scene(prev=None):
+    return {"character": (prev or {}).get("character", NO_CHAR) if (prev or {}).get("character") != NEW_CHAR else NO_CHAR,
+            "new_name": "", "new_desc": "", "voice": (prev or {}).get("voice", CHAR_DEFAULT),
+            "line": "", "instruct": "", "pause": 0.3, "image_prompt": "", "with": []}
+
+def starter_scenes():
+    cs = list(P.characters())
+    a = cs[0] if cs else NO_CHAR; b = cs[1] if len(cs) > 1 else a
+    return [
+        {**blank_scene(), "character": NO_CHAR, "line": "It's 3am. The house is too quiet.", "instruct": "slow whisper, creepy",
+         "pause": 0.4, "image_prompt": "dark empty hallway at night, one flickering light, moonlight through window"},
+        {**blank_scene(), "character": a, "line": "Doc, I think I'm overthinking.", "instruct": "tired, fast",
+         "pause": 0.3, "image_prompt": "lying on a therapy couch, staring at the ceiling"},
+        {**blank_scene(), "character": b, "line": "You're dead. That's the least of your problems.", "instruct": "nervous, quick",
+         "pause": 0.0, "image_prompt": "sitting in a therapist chair with a clipboard and coffee"},
+    ]
+
+# ---------- UI scene <-> pipeline scene ----------
+def to_pipeline(sc):
+    out = []
+    for i, s in enumerate(sc):
+        d = {"line": s["line"].strip(), "image_prompt": s["image_prompt"].strip(), "instruct": s.get("instruct", ""),
+             "pause": float(s.get("pause") or 0), "voice": None if s.get("voice") == CHAR_DEFAULT else s.get("voice"),
+             "with": list(s.get("with") or [])}
+        c = s.get("character")
+        if c == NEW_CHAR:
+            d["character"] = s.get("new_name", "").strip(); d["new_character_desc"] = s.get("new_desc", "").strip()
+        elif c in (NO_CHAR, None, ""):
+            d["character"] = None
+        else:
+            d["character"] = c
+        out.append(d)
+    return out
+
+def from_json(text, default_char):
+    data = json.loads(text)
+    assert isinstance(data, list), "JSON ek list honi chahiye: [ {...}, {...} ]"
+    cs = P.characters(); sc = []
+    for x in data:
+        s = blank_scene(); s.update({"line": x.get("line", ""), "image_prompt": x.get("image_prompt", x.get("scene", "")),
+                                     "instruct": x.get("instruct", ""), "pause": x.get("pause", 0.3),
+                                     "voice": x.get("voice") or CHAR_DEFAULT, "with": [w for w in (x.get("with") or []) if w in cs]})
+        c = x.get("character", default_char)
+        if c in (None, "", "none", NO_CHAR): s["character"] = NO_CHAR
+        elif c in cs: s["character"] = c
+        else: s.update({"character": NEW_CHAR, "new_name": c, "new_desc": x.get("new_character_desc", "")})
+        sc.append(s)
+    return sc
+
+def chatgpt_prompt():
+    prof = P.load_profiles()
+    roster = "\n".join(f"- {n}: {prof.get(n, {}).get('desc', '(no description)')}" for n in P.characters()) or "- (none yet)"
+    return f'''You write scripts for 15–30 second faceless reels (dark comedy / horror).
+Topic: [WRITE TOPIC HERE]
+
+Existing characters you can use (use the exact name):
+{roster}
+You may also use NO character (a pure scene / b-roll shot): set "character": null.
+You may invent ONE new character: give it a short snake_case name and add "new_character_desc" (look: shape, eyes, mouth, props, vibe).
+
+Rules:
+- 5 to 8 scenes. Scene 1 = hook under 8 words. Every line under 12 words. Last scene = punchline or twist + short CTA.
+- Written to be SPOKEN fast. At most ONE slow line per script.
+- "instruct" = how to say it (emotion + pace), e.g. "fast, panicked", "slow whisper, creepy", "deadpan, bored".
+- "pause" = seconds of silence after the line: 0.3 normal, 0.6–0.9 before a punchline, 0 on the last.
+- "image_prompt" = what we SEE: setting/background + pose + props + expression, 8–20 words, no text in image.
+  Change backgrounds between scenes to keep it visually moving.
+- Optional "with": ["other_character"] if two characters share the frame (use rarely).
+
+Output ONLY valid JSON, nothing else:
+[
+  {{"character": "name_or_null", "line": "...", "instruct": "...", "pause": 0.3, "image_prompt": "..."}}
+]'''
 
 def _size(preset, cw, ch):
     s = P.SIZE_PRESETS.get(preset)
     if s: return s
-    w, h = int(cw), int(ch)
-    return (max(256, w - w % 2), max(256, h - h % 2))
+    w, h = int(cw), int(ch); return (max(256, w - w % 2), max(256, h - h % 2))
 
-def run(pid, char, lang_label, spk, spd, preset, cw, ch, script_text, music):
+def run(pid, sc, lang_label, narrator, spd, preset, cw, ch, music, style):
     lang = P.LANGS[lang_label]
+    probs = []
+    for i, s in enumerate(sc, 1):
+        if not s["line"].strip(): probs.append(f"scene {i}: line khali hai")
+        if not s["image_prompt"].strip(): probs.append(f"scene {i}: scene/background khali hai")
+        if s["character"] == NEW_CHAR and not (s["new_name"].strip() and s["new_desc"].strip()): probs.append(f"scene {i}: new character ka naam + look dono chahiye")
+    if not sc: probs.append("koi scene nahi")
+    if probs: yield "❌ " + "\n❌ ".join(probs), None, None; return
+    script = to_pipeline(sc); last = ""
     try:
-        script = json.loads(script_text)
-        assert isinstance(script, list) and all("line" in s and "image_prompt" in s for s in script), "har item mein 'line' aur 'image_prompt' chahiye"
-    except Exception as e:
-        yield f"❌ Script JSON galat hai: {e}", None, None; return
-    last = ""
-    try:
-        for status, img, vid in P.make_reel(pid, char, spk, spd, script, music or None, lang=lang, size=_size(preset, cw, ch)):
+        for status, img, vid in P.make_reel(pid, script, narrator, spd, music or None, lang=lang, size=_size(preset, cw, ch), style=style):
             last = status; yield status, img, vid
     except Exception:
         tb = traceback.format_exc(); ep = os.path.join(P.FOLDERS["logs"], "last_error.txt")
-        open(ep, "w").write(f"{time.ctime()}\nproject={pid} char={char} voice={spk} lang={lang}\n\n{tb}")
+        open(ep, "w").write(f"{time.ctime()}\nproject={pid} lang={lang} style={style}\n\n{json.dumps(script, ensure_ascii=False, indent=1)}\n\n{tb}")
         yield f"{last}\n\n❌ ERROR (saved: {ep})\n\n{tb[-3000:]}", None, None
 
 def build_samples(spd_v):
@@ -55,53 +115,155 @@ def sys_html():
 
 def lib_choices(): return [r["project_id"] for r in P.list_projects()]
 
-chars = list(P.characters())
+CSS = """
+.scene-card {border:1px solid #3a3a3a; border-radius:10px; padding:10px !important; margin-bottom:10px}
+.scene-head {font-weight:700; font-size:16px}
+.tiny button {min-width:38px !important; padding:4px 8px !important}
+"""
+
 with gr.Blocks(title="Reel Studio") as demo:
     gr.Markdown("## 🎬 Reel Studio (Mac)")
-    if not chars:
-        gr.Markdown("⚠️ `characters/` folder khali hai — Drive se character PNGs copy karo ya `.venv-mflux/bin/python make_characters.py`, phir page refresh.")
+    scenes = gr.State(starter_scenes())
+    rev = gr.Number(0, visible=False)
 
     with gr.Tab("Create"):
         with gr.Row():
-            with gr.Column():
-                pid = gr.Textbox(label="Project id (filename)", value=f"reel_{time.strftime('%m%d_%H%M')}")
-                char = gr.Dropdown(chars, value=chars[0] if chars else None, label="Character")
-                with gr.Row():
-                    lang = gr.Dropdown(list(P.LANGS), value="English", label="Language")
-                    spk = gr.Dropdown(P.SPEAKERS_EN, value="Ryan", label="Voice")
-                spd = gr.Slider(1.0, 1.4, value=1.2, step=0.05, label="Voice speed")
-                with gr.Row():
-                    preset = gr.Dropdown(list(P.SIZE_PRESETS), value=list(P.SIZE_PRESETS)[0], label="Size preset")
-                    cw = gr.Number(value=1080, label="Custom W", precision=0); ch = gr.Number(value=1920, label="Custom H", precision=0)
-                music = gr.Dropdown([""] + sorted(glob.glob(f"{P.FOLDERS['music']}/*.mp3")), value="", label="Background music (workspace/music/*.mp3)")
-                script = gr.Code(value=EXAMPLE, language="json", label="Script JSON (ChatGPT se)", lines=16)
-                with gr.Row():
-                    ex1 = gr.Button("Example: single character", size="sm"); ex2 = gr.Button("Example: multi-character", size="sm")
-                gr.Markdown("**Multi-character:** har line mein optional `\"character\"` (kaun bol raha hai) aur `\"voice\"`. "
-                            "Voice na do toh us character ki default voice (Characters tab) lagegi. `\"with\": [\"other_char\"]` = dono same frame mein. "
-                            "`character` na do toh upar wala default character.")
-                btn = gr.Button("▶ Run", variant="primary")
-            with gr.Column():
-                log = gr.Textbox(label="Progress / errors / timings", lines=18, max_lines=40)
-                prev = gr.Image(label="Latest image", height=300)
-                vid = gr.Video(label="Final video", height=420)
+            # ---------------- left: video settings + scenes ----------------
+            with gr.Column(scale=3):
+                with gr.Group():
+                    gr.Markdown("### 1 · Video settings")
+                    with gr.Row():
+                        pid = gr.Textbox(label="Project name", value=f"reel_{time.strftime('%m%d_%H%M')}", scale=2)
+                        style = gr.Dropdown(list(P.STYLE_PRESETS), value=list(P.STYLE_PRESETS)[0], label="Visual style", scale=2)
+                        preset = gr.Dropdown(list(P.SIZE_PRESETS), value=list(P.SIZE_PRESETS)[0], label="Size", scale=3)
+                    with gr.Row(visible=False) as custom_row:
+                        cw = gr.Number(value=1080, label="Width", precision=0); ch = gr.Number(value=1920, label="Height", precision=0)
+                    with gr.Row():
+                        lang = gr.Dropdown(list(P.LANGS), value="English", label="Language", scale=1)
+                        narrator = gr.Dropdown(P.SPEAKERS_EN, value="Ryan", label="Narrator voice (no-character scenes)", scale=1)
+                        spd = gr.Slider(1.0, 1.4, value=1.2, step=0.05, label="Voice speed", scale=1)
+                        music = gr.Dropdown([""] + sorted(glob.glob(f"{P.FOLDERS['music']}/*.mp3")), value="", label="Background music", scale=1)
+                    style_hint = gr.Markdown("")
 
-        def on_lang(l):
+                gr.Markdown("### 2 · Scenes")
+
+                @gr.render(inputs=[scenes, lang], triggers=[rev.change, demo.load])
+                def render_scenes(sc, lang_label):
+                    code = P.LANGS[lang_label]
+                    cs = list(P.characters())
+                    char_opts = [NO_CHAR] + cs + [NEW_CHAR]
+                    voice_opts = [CHAR_DEFAULT] + P.speakers_for(code)
+
+                    def set_field(state, val, i, key):
+                        state = copy.deepcopy(state); state[i][key] = val; return state
+
+                    for i, s in enumerate(sc):
+                        with gr.Column(elem_classes="scene-card"):
+                            with gr.Row(equal_height=True):
+                                gr.Markdown(f"<span class='scene-head'>Scene {i+1}</span>")
+                                with gr.Row(elem_classes="tiny"):
+                                    b_up = gr.Button("↑", size="sm"); b_dn = gr.Button("↓", size="sm")
+                                    b_dup = gr.Button("⧉", size="sm"); b_rm = gr.Button("🗑", size="sm")
+                            with gr.Row():
+                                c_dd = gr.Dropdown(char_opts, value=s["character"] if s["character"] in char_opts else NO_CHAR,
+                                                   interactive=True, label="Who's in this scene", scale=2)
+                                v_dd = gr.Dropdown(voice_opts, value=s["voice"] if s["voice"] in voice_opts else CHAR_DEFAULT,
+                                                   interactive=True, label="Voice", scale=2)
+                                pz = gr.Number(value=s.get("pause", 0.3), interactive=True, label="Pause after (s)", minimum=0, maximum=3, step=0.1, scale=1)
+                            if s["character"] == NEW_CHAR:
+                                with gr.Row():
+                                    nn = gr.Textbox(value=s["new_name"], interactive=True, label="New character name", placeholder="sad_vampire", scale=1)
+                                    nd = gr.Textbox(value=s["new_desc"], interactive=True, label="Look (shape, eyes, mouth, props, vibe)", scale=3,
+                                                    placeholder="a tiny vampire with an oversized cape, two sleepy red eyes, one small frown, holding a juice box")
+                                nn.change(lambda st, v, i=i: set_field(st, v, i, "new_name"), [scenes, nn], scenes, queue=False)
+                                nd.change(lambda st, v, i=i: set_field(st, v, i, "new_desc"), [scenes, nd], scenes, queue=False)
+                            ln = gr.Textbox(value=s["line"], interactive=True, label="Line (jo bola jayega — subtitle bhi yahi)", lines=1)
+                            with gr.Row():
+                                sp = gr.Textbox(value=s["image_prompt"], interactive=True, label="Scene / background (kya dikhega)", lines=2, scale=3,
+                                                placeholder="rainy rooftop at night, neon signs, character sitting on the edge looking down")
+                                if code == "en":
+                                    ins = gr.Textbox(value=s.get("instruct", ""), interactive=True, label="How to say it", placeholder="deadpan, fast", scale=1)
+                                    ins.change(lambda st, v, i=i: set_field(st, v, i, "instruct"), [scenes, ins], scenes, queue=False)
+                            others = [x for x in cs if x != s["character"]]
+                            if others:
+                                wf = gr.Dropdown(others, value=[w for w in s.get("with", []) if w in others], multiselect=True,
+                                                 interactive=True, label="Also in frame (optional)")
+                                wf.change(lambda st, v, i=i: set_field(st, v, i, "with"), [scenes, wf], scenes, queue=False)
+
+                            def on_char(st, v, r, i=i):
+                                old = st[i]["character"]; st = set_field(st, v, i, "character")
+                                restructure = (old == NEW_CHAR) != (v == NEW_CHAR) or (old == NO_CHAR) != (v == NO_CHAR)
+                                return st, (r + 1 if restructure else r)
+                            c_dd.change(on_char, [scenes, c_dd, rev], [scenes, rev], queue=False)
+                            v_dd.change(lambda st, v, i=i: set_field(st, v, i, "voice"), [scenes, v_dd], scenes, queue=False)
+                            pz.change(lambda st, v, i=i: set_field(st, v, i, "pause"), [scenes, pz], scenes, queue=False)
+                            ln.change(lambda st, v, i=i: set_field(st, v, i, "line"), [scenes, ln], scenes, queue=False)
+                            sp.change(lambda st, v, i=i: set_field(st, v, i, "image_prompt"), [scenes, sp], scenes, queue=False)
+
+                            def mv(st, r, i=i, d=-1):
+                                j = i + d
+                                if 0 <= j < len(st): st = copy.deepcopy(st); st[i], st[j] = st[j], st[i]
+                                return st, r + 1
+                            def dup(st, r, i=i):
+                                st = copy.deepcopy(st); st.insert(i + 1, copy.deepcopy(st[i])); return st, r + 1
+                            def rm(st, r, i=i):
+                                st = copy.deepcopy(st); st.pop(i); return st, r + 1
+                            b_up.click(lambda st, r, i=i: mv(st, r, i, -1), [scenes, rev], [scenes, rev], queue=False)
+                            b_dn.click(lambda st, r, i=i: mv(st, r, i, +1), [scenes, rev], [scenes, rev], queue=False)
+                            b_dup.click(dup, [scenes, rev], [scenes, rev], queue=False)
+                            b_rm.click(rm, [scenes, rev], [scenes, rev], queue=False)
+
+                with gr.Row():
+                    add_btn = gr.Button("➕ Add scene")
+                    clear_btn = gr.Button("Clear all", size="sm")
+                add_btn.click(lambda st, r: (st + [blank_scene(st[-1] if st else None)], r + 1), [scenes, rev], [scenes, rev], queue=False)
+                clear_btn.click(lambda r: ([blank_scene()], r + 1), [rev], [scenes, rev], queue=False)
+
+                with gr.Accordion("📋 ChatGPT se script laao (JSON import / export)", open=False):
+                    gr.Markdown("**1.** Ye prompt copy karke ChatGPT mein do (topic badal ke). **2.** Jo JSON mile, neeche paste karke *Load into scenes*. Phir upar cards mein edit kar sakti ho.")
+                    gpt = gr.Code(value=chatgpt_prompt(), language="markdown", label="ChatGPT prompt (copy icon top-right)", lines=12)
+                    with gr.Row():
+                        imp_default = gr.Dropdown([NO_CHAR] + list(P.characters()), value=NO_CHAR, label="Lines without 'character' →")
+                        imp_btn = gr.Button("⬇ Load into scenes", variant="primary"); exp_btn = gr.Button("⬆ Export current scenes")
+                    js = gr.Code(language="json", label="JSON", lines=12)
+                    imp_msg = gr.Markdown("")
+                    def do_import(text, dflt, r):
+                        try: sc = from_json(text, dflt); return sc, r + 1, f"✅ {len(sc)} scenes loaded"
+                        except Exception as e: return gr.update(), r, f"❌ {e}"
+                    imp_btn.click(do_import, [js, imp_default, rev], [scenes, rev, imp_msg])
+                    exp_btn.click(lambda st: json.dumps(to_pipeline(st), ensure_ascii=False, indent=1), scenes, js)
+
+                btn = gr.Button("▶ Make video", variant="primary", size="lg")
+
+            # ---------------- right: progress ----------------
+            with gr.Column(scale=2):
+                log = gr.Textbox(label="Progress / errors / timings", lines=16, max_lines=40)
+                prev = gr.Image(label="Latest image", height=300)
+                vid = gr.Video(label="Final video", height=460)
+
+        def on_lang(l, st, r):
             code = P.LANGS[l]; opts = P.speakers_for(code)
-            return gr.update(choices=opts, value=opts[0]), gr.update(value=EXAMPLE_HI if code == "hi" else EXAMPLE)
-        lang.change(on_lang, lang, [spk, script])
-        ex1.click(lambda: EXAMPLE, None, script); ex2.click(lambda: EXAMPLE_MULTI, None, script)
-        btn.click(run, [pid, char, lang, spk, spd, preset, cw, ch, script, music], [log, prev, vid])
+            st = copy.deepcopy(st)
+            for s in st:
+                if s["voice"] not in opts: s["voice"] = CHAR_DEFAULT
+            return gr.update(choices=opts, value=opts[0]), st, r + 1
+        lang.change(on_lang, [lang, scenes, rev], [narrator, scenes, rev])
+        preset.change(lambda p: gr.update(visible=P.SIZE_PRESETS.get(p) is None), preset, custom_row)
+        style.change(lambda s: "" if s.startswith("Flat") else
+                     f"ℹ️ Pehle se bane characters flat-cartoon style ke hain — **{s}** mein unka look thoda badlega. "
+                     f"Is style ke liye best: scene mein *+ New character* (Run pe isi style mein banega) ya *(no character)* scenes.", style, style_hint)
+        btn.click(run, [pid, scenes, lang, narrator, spd, preset, cw, ch, music, style], [log, prev, vid])
 
     with gr.Tab("Characters"):
         gr.Markdown("Apne characters — dekho, naye banao (text se ya image upload), default voice set karo, delete karo.")
         ch_html = gr.HTML(value=P.characters_html())
-        with gr.Accordion("➕ New character (description se, FLUX)", open=True):
+        with gr.Accordion("➕ New character", open=True):
             with gr.Row():
                 nc_name = gr.Textbox(label="Name (e.g. sad_vampire)", scale=1)
+                nc_style = gr.Dropdown(list(P.STYLE_PRESETS), value=list(P.STYLE_PRESETS)[0], label="Style", scale=1)
                 nc_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), value="Ryan", label="Default voice", scale=1)
-                nc_seed = gr.Number(value=42, label="Seed (dusra look chahiye toh badlo)", precision=0, scale=1)
-            nc_desc = gr.Textbox(label="Look description (English, 1–2 lines: shape, eyes, mouth, props, vibe)", lines=2,
+                nc_seed = gr.Number(value=42, label="Seed (dusra look = badlo)", precision=0, scale=1)
+            nc_desc = gr.Textbox(label="Look description (English: shape, eyes, mouth, props, vibe)", lines=2,
                                  placeholder="a tiny vampire with oversized cape, two sleepy red eyes, one small frown, holding a juice box, bored vibe")
             nc_btn = gr.Button("✨ Create (~1–2 min)", variant="primary")
         with gr.Accordion("⬆ Upload existing image as character", open=False):
@@ -110,35 +272,35 @@ with gr.Blocks(title="Reel Studio") as demo:
             up_img = gr.Image(type="filepath", label="Character image (plain background best)")
             up_btn = gr.Button("Add")
         with gr.Row():
-            ed_sel = gr.Dropdown(chars, label="Character", scale=2)
+            ed_sel = gr.Dropdown(list(P.characters()), label="Character", scale=2)
             ed_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), label="Set default voice", scale=2)
             ed_save = gr.Button("💾 Save voice", scale=1)
             ed_del = gr.Button("🗑 Delete character", variant="stop", scale=1)
         ch_msg = gr.Textbox(label="", lines=2)
 
-        def _ch_refresh(msg):
+        def _ch_refresh(msg, r):
             cs = list(P.characters())
-            return msg, P.characters_html(), gr.update(choices=cs), gr.update(choices=cs, value=None)
-        def do_create(n, d, v, sd):
-            if not n or not d: return _ch_refresh("❌ naam aur description dono chahiye")
+            return msg, P.characters_html(), gr.update(choices=cs, value=None), r + 1, chatgpt_prompt(), gr.update(choices=[NO_CHAR] + cs)
+        def do_create(n, d, stl, v, sd, r):
+            if not n or not d: return _ch_refresh("❌ naam aur description dono chahiye", r)
             try:
-                lang = "hi" if v in P.SPEAKERS_HI else "en"; P.create_character(n, d, sd, v, lang)
-                return _ch_refresh(f"✅ '{P.safe_name(n)}' ban gaya. Pasand nahi? delete karke seed badal ke dobara.")
-            except Exception as e: return _ch_refresh(f"❌ {e}"[-1500:])
-        def do_upload(n, img, v):
-            if not n or not img: return _ch_refresh("❌ naam aur image dono chahiye")
-            P.add_character_from_image(n, img, v, "hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ '{P.safe_name(n)}' added")
-        def do_save_voice(n, v):
-            if not n: return _ch_refresh("❌ character select karo")
-            P.save_profile(n, voice=v, lang="hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ {n} → {v}")
-        def do_del(n):
-            if not n: return _ch_refresh("❌ character select karo")
-            return _ch_refresh(P.delete_character(n))
-        outs = [ch_msg, ch_html, char, ed_sel]
-        nc_btn.click(do_create, [nc_name, nc_desc, nc_voice, nc_seed], outs)
-        up_btn.click(do_upload, [up_name, up_img, up_voice], outs)
-        ed_save.click(do_save_voice, [ed_sel, ed_voice], outs)
-        ed_del.click(do_del, ed_sel, outs)
+                P.create_character(n, d, sd, v, "hi" if v in P.SPEAKERS_HI else "en", stl)
+                return _ch_refresh(f"✅ '{P.safe_name(n)}' ban gaya. Pasand nahi? delete karke seed badal ke dobara.", r)
+            except Exception as e: return _ch_refresh(f"❌ {e}"[-1500:], r)
+        def do_upload(n, img, v, r):
+            if not n or not img: return _ch_refresh("❌ naam aur image dono chahiye", r)
+            P.add_character_from_image(n, img, v, "hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ '{P.safe_name(n)}' added", r)
+        def do_save_voice(n, v, r):
+            if not n: return _ch_refresh("❌ character select karo", r)
+            P.save_profile(n, voice=v, lang="hi" if v in P.SPEAKERS_HI else "en"); return _ch_refresh(f"✅ {n} → {v}", r)
+        def do_del(n, r):
+            if not n: return _ch_refresh("❌ character select karo", r)
+            return _ch_refresh(P.delete_character(n), r)
+        outs = [ch_msg, ch_html, ed_sel, rev, gpt, imp_default]
+        nc_btn.click(do_create, [nc_name, nc_desc, nc_style, nc_voice, nc_seed, rev], outs)
+        up_btn.click(do_upload, [up_name, up_img, up_voice, rev], outs)
+        ed_save.click(do_save_voice, [ed_sel, ed_voice, rev], outs)
+        ed_del.click(do_del, [ed_sel, rev], outs)
 
     with gr.Tab("Library"):
         gr.Markdown("Saare projects — timings ke saath. Delete = video + audio + images + subtitles + metadata sab hat jaata hai.")
@@ -147,6 +309,7 @@ with gr.Blocks(title="Reel Studio") as demo:
             lib_sel = gr.Dropdown(lib_choices(), label="Project", scale=3)
             lib_refresh = gr.Button("🔄 Refresh", scale=1)
             lib_play = gr.Button("▶ Play", scale=1)
+            lib_load = gr.Button("✏ Open in editor", scale=1)
             lib_del = gr.Button("🗑 Delete (all artifacts)", variant="stop", scale=1)
         lib_vid = gr.Video(label="Preview", height=420)
         lib_msg = gr.Textbox(label="", lines=1)
@@ -154,34 +317,38 @@ with gr.Blocks(title="Reel Studio") as demo:
         def lib_do_delete(p):
             if not p: return "koi project select nahi", P.library_table(), gr.update(choices=lib_choices(), value=None), None
             m = P.delete_project(p); return m, P.library_table(), gr.update(choices=lib_choices(), value=None), None
+        def lib_open(p, r):
+            if not p: return gr.update(), r, "koi project select nahi", gr.update()
+            meta = json.load(open(os.path.join(P.FOLDERS["projects"], f"{p}.json")))
+            sc = from_json(json.dumps(meta.get("script", [])), NO_CHAR)
+            return sc, r + 1, f"✏ '{p}' Create tab mein khul gaya (naya naam do warna overwrite hoga)", f"{p}_v2"
         lib_refresh.click(lib_do_refresh, None, [lib_html, lib_sel])
         lib_play.click(lambda p: P.project_video(p) if p else None, lib_sel, lib_vid)
+        lib_load.click(lib_open, [lib_sel, rev], [scenes, rev, lib_msg, pid])
         lib_del.click(lib_do_delete, lib_sel, [lib_msg, lib_html, lib_sel, lib_vid])
 
     with gr.Tab("Voices"):
-        gr.Markdown("9 English voices × 3 moods (Qwen3-TTS, instruct se emotion) + 2 Hindi voices (Edge-TTS, emotion control nahi, sirf speed). Pehli baar **Build all samples** (ek baar, ~3 min).")
+        gr.Markdown("9 English voices × 3 moods (Qwen3-TTS, instruct se emotion) + 2 Hindi voices (Edge-TTS, sirf speed). Pehli baar **Build all samples** (~3 min).")
         with gr.Row():
             build_btn = gr.Button("Build all samples (one time)"); build_log = gr.Textbox(label="build log", lines=2)
         samples_html = gr.HTML(value=P.voice_samples_html())
-        gr.Markdown("**Custom line** — selected language/voice (Create tab se) + apna instruct:")
         with gr.Row():
+            pv_voice = gr.Dropdown(P.SPEAKERS_EN + list(P.SPEAKERS_HI), value="Ryan", label="Voice")
             pv_text = gr.Textbox(value=P.PREVIEW_LINE, label="Test line"); pv_inst = gr.Textbox(value="deadpan, dry, fast", label="Instruct (EN only)")
             pv_btn = gr.Button("▶ Preview")
         pv_audio = gr.Audio(label="Custom sample", autoplay=True)
         build_btn.click(build_samples, [spd], [build_log, samples_html])
-        spd.release(lambda v: P.voice_samples_html(v), [spd], samples_html)
-        pv_btn.click(lambda s, i, v, t, l: P.preview_voice(s, i, v, t, P.LANGS[l]), [spk, pv_inst, spd, pv_text, lang], pv_audio)
+        pv_btn.click(lambda s, i, v, t: P.preview_voice(s, i, v, t, "hi" if s in P.SPEAKERS_HI else "en"), [pv_voice, pv_inst, spd, pv_text], pv_audio)
 
     with gr.Tab("System"):
-        gr.Markdown("Kaunsa hissa kahan chal raha hai. Images = MLX seedha Apple GPU (Metal). TTS = PyTorch MPS (Apple GPU) ya CPU fallback. Whisper = CPU.")
+        gr.Markdown("Images = MLX → Apple GPU (Metal). TTS = PyTorch MPS (Apple GPU) ya CPU fallback. Whisper = CPU.")
         sys_box = gr.HTML(value=sys_html()); sys_btn = gr.Button("🔄 Refresh")
         sys_btn.click(sys_html, None, sys_box)
 
-    # page load/refresh pe sab dobara scan (pehle static tha — isi liye table '—' dikhati thi)
     def _on_load():
         cs = list(P.characters())
         return (P.voice_samples_html(), P.library_table(), gr.update(choices=lib_choices()), sys_html(),
-                P.characters_html(), gr.update(choices=cs, value=cs[0] if cs else None), gr.update(choices=cs))
-    demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, char, ed_sel])
+                P.characters_html(), gr.update(choices=cs), chatgpt_prompt(), gr.update(choices=[NO_CHAR] + cs))
+    demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, ed_sel, gpt, imp_default])
 
-demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True)
+demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, css=CSS)
