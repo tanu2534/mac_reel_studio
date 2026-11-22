@@ -132,6 +132,12 @@ def sys_html():
 
 def lib_choices(): return [r["project_id"] for r in P.list_projects()]
 
+def music_choices():
+    """workspace/music/ ki saari audio files (naam dikhao, path value). Har page load / refresh pe dobara scan."""
+    exts = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
+    fs = sorted(f for f in glob.glob(f"{P.FOLDERS['music']}/*") if f.lower().endswith(exts))
+    return [("(no music)", "")] + [(os.path.basename(f), f) for f in fs]
+
 CSS = """
 .scene-card {border:1px solid #3a3a3a; border-radius:10px; padding:10px !important; margin-bottom:10px}
 .scene-head {font-weight:700; font-size:16px}
@@ -159,7 +165,9 @@ with gr.Blocks(title="Reel Studio") as demo:
                         lang = gr.Dropdown(list(P.LANGS), value="English", label="Language", scale=1)
                         narrator = gr.Dropdown(P.SPEAKERS_EN, value="Ryan", label="Narrator voice (no-character scenes)", scale=1)
                         spd = gr.Slider(1.0, 1.4, value=1.2, step=0.05, label="Voice speed", scale=1)
-                        music = gr.Dropdown([""] + sorted(glob.glob(f"{P.FOLDERS['music']}/*.mp3")), value="", label="Background music", scale=1)
+                        with gr.Column(scale=1, min_width=160):
+                            music = gr.Dropdown(music_choices(), value="", label="Background music (workspace/music/)")
+                            music_rf = gr.Button("🔄 refresh music list", size="sm")
                     style_hint = gr.Markdown("")
 
                 gr.Markdown("### 2 · Scenes")
@@ -277,6 +285,7 @@ with gr.Blocks(title="Reel Studio") as demo:
                      f"ℹ️ Pehle se bane characters flat-cartoon style ke hain — **{s}** mein unka look thoda badlega. "
                      f"Is style ke liye best: scene mein *+ New character* (Run pe isi style mein banega) ya *(no character)* scenes.", style, style_hint)
         btn.click(run, [pid, scenes, lang, narrator, spd, preset, cw, ch, music, style], [log, prev, vid])
+        music_rf.click(lambda: gr.update(choices=music_choices()), None, music)
 
     with gr.Tab("Characters"):
         gr.Markdown("Apne characters — dekho, naye banao (text se ya image upload), default voice set karo, delete karo.")
@@ -345,7 +354,7 @@ with gr.Blocks(title="Reel Studio") as demo:
             if not p: return gr.update(), r, "koi project select nahi", gr.update()
             meta = json.load(open(os.path.join(P.FOLDERS["projects"], f"{p}.json")))
             sc = from_json(json.dumps(meta.get("script", [])), NO_CHAR)
-            return sc, r + 1, f"✏ '{p}' Create tab mein khul gaya (naya naam do warna overwrite hoga)", f"{p}_v2"
+            return sc, r + 1, f"✏ '{p}' Create tab mein khul gaya. Same naam se Make video = purana video replace (images/voice cache se, sirf render). Alag version chahiye toh naam badlo.", p
         lib_refresh.click(lib_do_refresh, None, [lib_html, lib_sel])
         lib_play.click(lambda p: P.project_video(p) if p else None, lib_sel, lib_vid)
         lib_load.click(lib_open, [lib_sel, rev], [scenes, rev, lib_msg, pid])
@@ -372,7 +381,8 @@ with gr.Blocks(title="Reel Studio") as demo:
     def _on_load():
         cs = list(P.characters())
         return (P.voice_samples_html(), P.library_table(), gr.update(choices=lib_choices()), sys_html(),
-                P.characters_html(), gr.update(choices=cs), chatgpt_prompt(), gr.update(choices=[NO_CHAR] + cs))
-    demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, ed_sel, gpt, imp_default])
+                P.characters_html(), gr.update(choices=cs), chatgpt_prompt(), gr.update(choices=[NO_CHAR] + cs),
+                gr.update(choices=music_choices()))
+    demo.load(_on_load, None, [samples_html, lib_html, lib_sel, sys_box, ch_html, ed_sel, gpt, imp_default, music])
 
 demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, css=CSS, allowed_paths=[P.WS, P.CHAR_DIR])
